@@ -68,7 +68,8 @@ def create_env():
     env_path = Path(temp_dir).absolute()
     sys.stderr.write(f"Creating Virtual Environment with path: {env_path}...\n")
     execute(f"conda create --prefix {env_path} python=3.7 -y")
-    python_path = env_path / "bin" / "python"  # TODO: FIX ME!
+    # python_path = env_path / "bin" / "python"  # TODO: FIX ME!
+    python_path = env_path / "python"  # TODO: FIX ME!
     sys.stderr.write("\n")
     # get anaconda activate path
     conda_activate = Path(os.environ["CONDA_PREFIX"]) / "bin" / "activate"  # TODO: FIX ME!
@@ -225,13 +226,14 @@ class ModelRunner:
         self,
         times=1,
         models=None,
-        dataset="Alpha360",
+        dataset="Alpha158",
         universe="",
         exclude=False,
         qlib_uri: str = "git+https://github.com/microsoft/qlib#egg=pyqlib",
         exp_folder_name: str = "run_all_model_records",
         wait_before_rm_env: bool = False,
         wait_when_err: bool = False,
+        skip_env_creation: bool = True,
     ):
         """
         Please be aware that this function can only work under Linux. MacOS and Windows will be supported in the future.
@@ -313,55 +315,60 @@ class ModelRunner:
                 sys.stderr.write(f"There is no {dataset}.yaml file in {folders[fn]}")
                 continue
             sys.stderr.write("\n")
-            # create env by anaconda
-            temp_dir, env_path, python_path, conda_activate = create_env()
 
-            # install requirements.txt
-            sys.stderr.write("Installing requirements.txt...\n")
-            with open(req_path) as f:
-                content = f.read()
-            if "torch" in content:
-                # automatically install pytorch according to nvidia's version
-                execute(
-                    f"{python_path} -m pip install light-the-torch", wait_when_err=wait_when_err
-                )  # for automatically installing torch according to the nvidia driver
-                execute(
-                    f"{env_path / 'bin' / 'ltt'} install --install-cmd '{python_path} -m pip install {{packages}}' -- -r {req_path}",
-                    wait_when_err=wait_when_err,
-                )
+            if skip_env_creation:
+                temp_dir = tempfile.mkdtemp()
+                python_path = sys.executable
+                env_path = Path(python_path).parent
             else:
-                execute(f"{python_path} -m pip install -r {req_path}", wait_when_err=wait_when_err)
-            sys.stderr.write("\n")
+                # create env by anaconda
+                temp_dir, env_path, python_path, conda_activate = create_env()
 
+                # install requirements.txt
+                sys.stderr.write("Installing requirements.txt...\n")
+                with open(req_path) as f:
+                    content = f.read()
+                if "torch" in content:
+                    # automatically install pytorch according to nvidia's version
+                    execute(
+                        f"{python_path} -m pip install light-the-torch", wait_when_err=wait_when_err
+                    )  # for automatically installing torch according to the nvidia driver
+                    execute(
+                        f"{env_path / 'Scripts' / 'ltt'} install --python '{python_path}' -r {req_path}",
+                        wait_when_err=wait_when_err,
+                    )
+                else:
+                    execute(f"{python_path} -m pip install -r {req_path}", wait_when_err=wait_when_err)
+                sys.stderr.write("\n")
+                # setup gpu for tft
+                if fn == "TFT":
+                    execute(
+                        f"conda install -y --prefix {env_path} anaconda cudatoolkit=10.0 && conda install -y --prefix {env_path} cudnn",
+                        wait_when_err=wait_when_err,
+                    )
+                    sys.stderr.write("\n")
+                # install qlib
+                sys.stderr.write("Installing qlib...\n")
+                execute(f"{python_path} -m pip install --upgrade pip", wait_when_err=wait_when_err)  # TODO: FIX ME!
+                execute(f"{python_path} -m pip install --upgrade cython", wait_when_err=wait_when_err)  # TODO: FIX ME!
+                if fn == "TFT":
+                    execute(
+                        f"cd {env_path} && {python_path} -m pip install --upgrade --force-reinstall --ignore-installed PyYAML -e {qlib_uri}",
+                        wait_when_err=wait_when_err,
+                    )  # TODO: FIX ME!
+                else:
+                    execute(
+                        f"cd {env_path} && {python_path} -m pip install --upgrade --force-reinstall -e {qlib_uri}",
+                        wait_when_err=wait_when_err,
+                    )  # TODO: FIX ME!
+                sys.stderr.write("\n")
             # read yaml, remove seed kwargs of model, and then save file in the temp_dir
             yaml_path = gen_yaml_file_without_seed_kwargs(yaml_path, temp_dir)
-            # setup gpu for tft
-            if fn == "TFT":
-                execute(
-                    f"conda install -y --prefix {env_path} anaconda cudatoolkit=10.0 && conda install -y --prefix {env_path} cudnn",
-                    wait_when_err=wait_when_err,
-                )
-                sys.stderr.write("\n")
-            # install qlib
-            sys.stderr.write("Installing qlib...\n")
-            execute(f"{python_path} -m pip install --upgrade pip", wait_when_err=wait_when_err)  # TODO: FIX ME!
-            execute(f"{python_path} -m pip install --upgrade cython", wait_when_err=wait_when_err)  # TODO: FIX ME!
-            if fn == "TFT":
-                execute(
-                    f"cd {env_path} && {python_path} -m pip install --upgrade --force-reinstall --ignore-installed PyYAML -e {qlib_uri}",
-                    wait_when_err=wait_when_err,
-                )  # TODO: FIX ME!
-            else:
-                execute(
-                    f"cd {env_path} && {python_path} -m pip install --upgrade --force-reinstall -e {qlib_uri}",
-                    wait_when_err=wait_when_err,
-                )  # TODO: FIX ME!
-            sys.stderr.write("\n")
             # run workflow_by_config for multiple times
             for i in range(times):
                 sys.stderr.write(f"Running the model: {fn} for iteration {i+1}...\n")
                 errs = execute(
-                    f"{python_path} {env_path / 'bin' / 'qrun'} {yaml_path} {fn} {exp_folder_name}",
+                    f"{python_path} {env_path / 'Scripts' / 'qrun.exe'} {yaml_path} {fn} {exp_folder_name}",
                     wait_when_err=wait_when_err,
                 )
                 if errs is not None:
@@ -369,11 +376,12 @@ class ModelRunner:
                     _errs.update({i: errs})
                     errors[fn] = _errs
                 sys.stderr.write("\n")
-            # remove env
-            sys.stderr.write(f"Deleting the environment: {env_path}...\n")
-            if wait_before_rm_env:
-                input("Press Enter to Continue")
-            shutil.rmtree(env_path)
+            if not skip_env_creation:
+                # remove env
+                sys.stderr.write(f"Deleting the environment: {env_path}...\n")
+                if wait_before_rm_env:
+                    input("Press Enter to Continue")
+                shutil.rmtree(env_path)
         # print errors
         sys.stderr.write(f"Here are some of the errors of the models...\n")
         pprint(errors)
@@ -394,8 +402,8 @@ class ModelRunner:
             sys.stderr.write("\n")
         sys.stderr.write("\n")
         # move results folder
-        shutil.move(exp_folder_name, exp_folder_name + f"_{dataset}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}")
-        shutil.move("table.md", f"table_{dataset}_{datetime.now().strftime('%Y-%m-%d_%H:%M:%S')}.md")
+        shutil.move(exp_folder_name, exp_folder_name + f"_{dataset}_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}")
+        shutil.move("table.md", f"table_{dataset}_{datetime.now().strftime('%Y_%m_%d_%H_%M_%S')}.md")
 
 
 if __name__ == "__main__":
